@@ -11,17 +11,29 @@ import tempfile
 import requests
 import streamlit as st
 
-# Application Configuration: Read from environment or Streamlit secrets
-BACKEND_URL = os.getenv("BACKEND_URL")
-if not BACKEND_URL and hasattr(st, "secrets") and "BACKEND_URL" in st.secrets:
-    BACKEND_URL = str(st.secrets["BACKEND_URL"])
+# Safe secrets getter to prevent StreamlitSecretNotFoundError and TomlDecodeError
+def safe_get_secret(key: str, default: str = "") -> str:
+    """Safely retrieves a secret from Streamlit secrets without throwing exceptions if missing or malformed."""
+    try:
+        if hasattr(st, "secrets"):
+            val = st.secrets.get(key, default)
+            if val is not None:
+                return str(val).strip()
+    except Exception:
+        # Gracefully handle TomlDecodeError or missing secrets.toml
+        pass
+    return default
+
+# Application Configuration: Read from environment or Streamlit secrets safely
+BACKEND_URL = os.getenv("BACKEND_URL") or safe_get_secret("BACKEND_URL")
 if not BACKEND_URL:
     BACKEND_URL = "http://localhost:8000"
 BACKEND_URL = BACKEND_URL.rstrip("/")
 
 # Get Gemini API key if present in secrets
-if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-    os.environ["GEMINI_API_KEY"] = str(st.secrets["GEMINI_API_KEY"])
+gemini_secret_key = safe_get_secret("GEMINI_API_KEY")
+if gemini_secret_key:
+    os.environ["GEMINI_API_KEY"] = gemini_secret_key
 
 st.set_page_config(
     page_title="AgentRAG – Enterprise Knowledge Assistant",
@@ -95,9 +107,7 @@ def get_backend_health():
 
 # Check if direct in-process execution is available as cloud fallback
 def is_standalone_ready():
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not api_key and hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-        api_key = str(st.secrets["GEMINI_API_KEY"])
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or safe_get_secret("GEMINI_API_KEY")
     return bool(api_key)
 
 # Helper: Upload PDF (HTTP or Standalone fallback)
@@ -178,7 +188,16 @@ with st.sidebar:
         st.write("• **Gemini API**: `Configured & Ready`")
     else:
         st.error(f"Backend offline at `{BACKEND_URL}`.")
-        st.warning("Please configure `GEMINI_API_KEY` in Streamlit Cloud Secrets (or start local FastAPI).")
+        st.warning("Gemini API Key needed to enable Cloud Standalone Mode:")
+        manual_key = st.text_input(
+            "Enter Gemini API Key:",
+            type="password",
+            help="Paste your Google AI Studio API key here or add it to Streamlit Cloud Secrets."
+        )
+        if manual_key:
+            os.environ["GEMINI_API_KEY"] = manual_key.strip()
+            st.success("API Key applied! Reloading...")
+            st.rerun()
 
     st.divider()
 
@@ -209,7 +228,7 @@ with st.sidebar:
     st.caption("Click any question to prefill the query box:")
     
     sample_questions = [
-        "What is the company's leave policy?",
+        "What is the company leave policy?",
         "What are the working hours?",
         "What is the refund policy?",
         "How many employees are in Engineering?",

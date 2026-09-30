@@ -39,8 +39,10 @@ class Settings(BaseSettings):
         if not key:
             try:
                 import streamlit as st
-                if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-                    key = str(st.secrets["GEMINI_API_KEY"])
+                if hasattr(st, "secrets"):
+                    val = st.secrets.get("GEMINI_API_KEY")
+                    if val is not None:
+                        key = str(val).strip()
             except Exception:
                 pass
         return key
