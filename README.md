@@ -11,9 +11,6 @@
 
 An intelligent, production-principled GenAI assistant designed to answer enterprise questions across **unstructured documents** (PDF policies) and **structured relational data** (MySQL employee database). Powered by **LangGraph** for deterministic query routing, **LangChain** and **ChromaDB** for Document RAG, and **Google Gemini 2.5 Flash** for grounded reasoning and text-to-SQL synthesis.
 
-> 🎬 **Project Walkthrough Video:** Watch the silent HD walkthrough at [**`docs/demo_video.mp4`**](docs/demo_video.mp4) (42-second UI, RAG, and SQL architecture tour).  
-> 📚 **Interview & Architecture Masterclass:** Download the complete 9-page [**AgentRAG Project & Technical Interview Guide (PDF)**](docs/AgentRAG_Project_and_Interview_Guide.pdf) covering end-to-end flows, RAG concepts, ChromaDB vs alternatives, Text-to-SQL security, and 25+ interview Q&As!
-
 ---
 
 ## 📑 Table of Contents
