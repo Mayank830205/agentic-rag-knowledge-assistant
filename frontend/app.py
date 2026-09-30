@@ -2,15 +2,26 @@
 AgentRAG - Enterprise Knowledge Assistant
 Streamlit Frontend Application.
 
-Communicates exclusively with the FastAPI backend via HTTP.
-Contains NO business logic.
+Supports two operational modes:
+1. Standard Decoupled Mode (Recommended): Communicates via HTTP with FastAPI backend.
+2. Resilient Cloud Standalone Mode: Executes in-process when deployed directly to Streamlit Community Cloud.
 """
 import os
+import tempfile
 import requests
 import streamlit as st
 
-# Application Configuration
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+# Application Configuration: Read from environment or Streamlit secrets
+BACKEND_URL = os.getenv("BACKEND_URL")
+if not BACKEND_URL and hasattr(st, "secrets") and "BACKEND_URL" in st.secrets:
+    BACKEND_URL = str(st.secrets["BACKEND_URL"])
+if not BACKEND_URL:
+    BACKEND_URL = "http://localhost:8000"
+BACKEND_URL = BACKEND_URL.rstrip("/")
+
+# Get Gemini API key if present in secrets
+if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
+    os.environ["GEMINI_API_KEY"] = str(st.secrets["GEMINI_API_KEY"])
 
 st.set_page_config(
     page_title="AgentRAG – Enterprise Knowledge Assistant",
@@ -75,33 +86,77 @@ st.markdown("""
 # Helper: Fetch Backend Health
 def get_backend_health():
     try:
-        resp = requests.get(f"{BACKEND_URL}/health", timeout=3)
+        resp = requests.get(f"{BACKEND_URL}/health", timeout=2)
         if resp.status_code == 200:
             return resp.json()
         return None
     except Exception:
         return None
 
-# Helper: Upload PDF
-def upload_pdf_document(uploaded_file):
-    try:
-        files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
-        resp = requests.post(f"{BACKEND_URL}/documents/upload", files=files, timeout=60)
-        return resp.status_code, resp.json()
-    except Exception as e:
-        return 500, {"detail": str(e)}
+# Check if direct in-process execution is available as cloud fallback
+def is_standalone_ready():
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key and hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
+        api_key = str(st.secrets["GEMINI_API_KEY"])
+    return bool(api_key)
 
-# Helper: Send Chat Query
-def send_chat_query(question_text):
-    try:
-        resp = requests.post(
-            f"{BACKEND_URL}/chat",
-            json={"question": question_text},
-            timeout=60
-        )
-        return resp.status_code, resp.json()
-    except Exception as e:
-        return 500, {"detail": str(e)}
+# Helper: Upload PDF (HTTP or Standalone fallback)
+def upload_pdf_document(uploaded_file, use_standalone=False):
+    if not use_standalone:
+        try:
+            files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
+            resp = requests.post(f"{BACKEND_URL}/documents/upload", files=files, timeout=60)
+            return resp.status_code, resp.json()
+        except Exception as e:
+            return 500, {"detail": str(e)}
+    else:
+        # In-process standalone execution
+        try:
+            from backend.rag.ingestion import ingest_pdf_to_vectorstore
+            os.makedirs("data/documents", exist_ok=True)
+            save_path = os.path.join("data", "documents", uploaded_file.name)
+            with open(save_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            res = ingest_pdf_to_vectorstore(save_path)
+            return 201, {
+                "message": "Document indexed successfully in standalone mode.",
+                "filename": res["filename"],
+                "chunks_ingested": res["chunks_added"],
+                "total_pages": res["pages"]
+            }
+        except Exception as e:
+            return 500, {"detail": f"Standalone ingestion error: {str(e)}"}
+
+# Helper: Send Chat Query (HTTP or Standalone fallback)
+def send_chat_query(question_text, use_standalone=False):
+    if not use_standalone:
+        try:
+            resp = requests.post(
+                f"{BACKEND_URL}/chat",
+                json={"question": question_text},
+                timeout=60
+            )
+            return resp.status_code, resp.json()
+        except Exception as e:
+            return 500, {"detail": str(e)}
+    else:
+        # In-process standalone execution
+        try:
+            from backend.agent.graph import run_agent_workflow
+            final_state = run_agent_workflow(question_text)
+            return 200, {
+                "answer": final_state.get("answer", "No answer generated."),
+                "route": final_state.get("route", "rag"),
+                "sources": final_state.get("sources", []),
+                "sql_query": final_state.get("sql_query") or None
+            }
+        except Exception as e:
+            return 500, {"detail": f"Standalone processing error: {str(e)}"}
+
+# Determine active execution mode
+health_data = get_backend_health()
+has_standalone = is_standalone_ready()
+is_standalone_mode = (health_data is None) and has_standalone
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -109,15 +164,21 @@ with st.sidebar:
     
     # System Status Monitor
     st.subheader("System Health")
-    health_data = get_backend_health()
     if health_data:
-        st.success(f"Backend: {health_data.get('status', 'online').upper()}")
-        st.write(f"• **MySQL**: `{health_data.get('database')}`")
+        st.success(f"Mode: DECOUPLED (HTTP)")
+        st.write(f"• **Backend**: `{health_data.get('status', 'online').upper()}`")
+        st.write(f"• **Database**: `{health_data.get('database')}`")
         st.write(f"• **ChromaDB**: `{health_data.get('vector_store')}`")
         st.write(f"• **Indexed Chunks**: `{health_data.get('documents_count', 0)}`")
+    elif is_standalone_mode:
+        st.info("Mode: STANDALONE CLOUD")
+        st.caption("Running in-process on Streamlit Cloud with embedded LangGraph & ChromaDB.")
+        st.write("• **Backend**: `In-Process Engine`")
+        st.write("• **Database**: `Resilient Relational Fallback`")
+        st.write("• **Gemini API**: `Configured & Ready`")
     else:
-        st.error(f"Cannot connect to Backend at `{BACKEND_URL}`.")
-        st.info("Make sure the FastAPI server is running: `python -m backend.main`")
+        st.error(f"Backend offline at `{BACKEND_URL}`.")
+        st.warning("Please configure `GEMINI_API_KEY` in Streamlit Cloud Secrets (or start local FastAPI).")
 
     st.divider()
 
@@ -132,7 +193,7 @@ with st.sidebar:
     if st.button("2. Process Document", type="primary", use_container_width=True):
         if uploaded_pdf is not None:
             with st.spinner("Chunking, embedding, and indexing into ChromaDB..."):
-                status_code, upload_res = upload_pdf_document(uploaded_pdf)
+                status_code, upload_res = upload_pdf_document(uploaded_pdf, use_standalone=is_standalone_mode)
                 if status_code in (200, 201):
                     st.success(f"Indexed **{upload_res.get('chunks_ingested')}** chunks from **{upload_res.get('total_pages')}** pages!")
                     st.rerun()
@@ -176,12 +237,11 @@ with st.form("query_form"):
     submit_btn = st.form_submit_button("Submit Question", type="primary", use_container_width=False)
 
 if submit_btn and user_question:
-    # Clear prefill state on submit
     if "prefill_query" in st.session_state:
         del st.session_state["prefill_query"]
 
     with st.spinner("Routing through LangGraph and generating response..."):
-        status_code, chat_res = send_chat_query(user_question)
+        status_code, chat_res = send_chat_query(user_question, use_standalone=is_standalone_mode)
 
     if status_code == 200:
         route = chat_res.get("route", "rag").lower()
@@ -197,7 +257,7 @@ if submit_btn and user_question:
             if route == "rag":
                 st.markdown('<span class="badge-rag">📄 Route: RAG (Unstructured Document)</span>', unsafe_allow_html=True)
             else:
-                st.markdown('<span class="badge-sql">🗄️ Route: SQL (MySQL Database)</span>', unsafe_allow_html=True)
+                st.markdown('<span class="badge-sql">🗄️ Route: SQL (MySQL / Relational Database)</span>', unsafe_allow_html=True)
 
         # 4. Display Answer
         st.subheader("4. Generated Answer")

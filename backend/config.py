@@ -34,8 +34,16 @@ class Settings(BaseSettings):
     )
 
     def get_gemini_api_key(self) -> str:
-        """Helper to ensure API key is retrieved from either GEMINI_API_KEY or GOOGLE_API_KEY."""
-        return self.GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
+        """Helper to ensure API key is retrieved from GEMINI_API_KEY, GOOGLE_API_KEY, or Streamlit secrets."""
+        key = self.GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
+        if not key:
+            try:
+                import streamlit as st
+                if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
+                    key = str(st.secrets["GEMINI_API_KEY"])
+            except Exception:
+                pass
+        return key
 
     def get_mysql_connection_url(self) -> str:
         """Constructs a PyMySQL SQLAlchemy connection string."""
