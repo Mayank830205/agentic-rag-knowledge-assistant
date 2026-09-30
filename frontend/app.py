@@ -1,0 +1,236 @@
+"""
+AgentRAG - Enterprise Knowledge Assistant
+Streamlit Frontend Application.
+
+Communicates exclusively with the FastAPI backend via HTTP.
+Contains NO business logic.
+"""
+import os
+import requests
+import streamlit as st
+
+# Application Configuration
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+
+st.set_page_config(
+    page_title="AgentRAG – Enterprise Knowledge Assistant",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom Styling
+st.markdown("""
+<style>
+    .main-title {
+        font-size: 2.2rem;
+        font-weight: 700;
+        color: #1A365D;
+        margin-bottom: 0px;
+    }
+    .sub-title {
+        font-size: 1.1rem;
+        color: #4A5568;
+        margin-bottom: 20px;
+    }
+    .badge-rag {
+        background-color: #EBF8FF;
+        color: #2B6CB0;
+        padding: 5px 12px;
+        border-radius: 12px;
+        font-weight: 600;
+        font-size: 0.9rem;
+        display: inline-block;
+        border: 1px solid #BEE3F8;
+    }
+    .badge-sql {
+        background-color: #FEFCBF;
+        color: #975A16;
+        padding: 5px 12px;
+        border-radius: 12px;
+        font-weight: 600;
+        font-size: 0.9rem;
+        display: inline-block;
+        border: 1px solid #FAF089;
+    }
+    .answer-box {
+        background-color: #F7FAFC;
+        border-left: 4px solid #3182CE;
+        padding: 16px;
+        border-radius: 6px;
+        font-size: 1.05rem;
+        margin-top: 15px;
+        margin-bottom: 15px;
+    }
+    .source-card {
+        background-color: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 6px;
+        padding: 12px;
+        margin-bottom: 8px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Helper: Fetch Backend Health
+def get_backend_health():
+    try:
+        resp = requests.get(f"{BACKEND_URL}/health", timeout=3)
+        if resp.status_code == 200:
+            return resp.json()
+        return None
+    except Exception:
+        return None
+
+# Helper: Upload PDF
+def upload_pdf_document(uploaded_file):
+    try:
+        files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
+        resp = requests.post(f"{BACKEND_URL}/documents/upload", files=files, timeout=60)
+        return resp.status_code, resp.json()
+    except Exception as e:
+        return 500, {"detail": str(e)}
+
+# Helper: Send Chat Query
+def send_chat_query(question_text):
+    try:
+        resp = requests.post(
+            f"{BACKEND_URL}/chat",
+            json={"question": question_text},
+            timeout=60
+        )
+        return resp.status_code, resp.json()
+    except Exception as e:
+        return 500, {"detail": str(e)}
+
+# --- SIDEBAR ---
+with st.sidebar:
+    st.title("⚙️ Control Panel")
+    
+    # System Status Monitor
+    st.subheader("System Health")
+    health_data = get_backend_health()
+    if health_data:
+        st.success(f"Backend: {health_data.get('status', 'online').upper()}")
+        st.write(f"• **MySQL**: `{health_data.get('database')}`")
+        st.write(f"• **ChromaDB**: `{health_data.get('vector_store')}`")
+        st.write(f"• **Indexed Chunks**: `{health_data.get('documents_count', 0)}`")
+    else:
+        st.error(f"Cannot connect to Backend at `{BACKEND_URL}`.")
+        st.info("Make sure the FastAPI server is running: `python -m backend.main`")
+
+    st.divider()
+
+    # Step 1 & 2: PDF Upload & Processing
+    st.subheader("1. Document Ingestion")
+    uploaded_pdf = st.file_uploader(
+        "Upload Company Policy PDF",
+        type=["pdf"],
+        help="Upload an enterprise policy or handbook in PDF format."
+    )
+
+    if st.button("2. Process Document", type="primary", use_container_width=True):
+        if uploaded_pdf is not None:
+            with st.spinner("Chunking, embedding, and indexing into ChromaDB..."):
+                status_code, upload_res = upload_pdf_document(uploaded_pdf)
+                if status_code in (200, 201):
+                    st.success(f"Indexed **{upload_res.get('chunks_ingested')}** chunks from **{upload_res.get('total_pages')}** pages!")
+                    st.rerun()
+                else:
+                    st.error(f"Upload failed: {upload_res.get('detail', 'Unknown error')}")
+        else:
+            st.warning("Please select a PDF file first.")
+
+    st.divider()
+
+    # Sample Questions Helper
+    st.subheader("💡 Example Questions")
+    st.caption("Click any question to prefill the query box:")
+    
+    sample_questions = [
+        "What is the company's leave policy?",
+        "What are the working hours?",
+        "What is the refund policy?",
+        "How many employees are in Engineering?",
+        "What is the average salary?",
+        "How many employees joined in 2025?"
+    ]
+
+    for sq in sample_questions:
+        if st.button(sq, key=f"btn_{sq}", use_container_width=True):
+            st.session_state["prefill_query"] = sq
+
+# --- MAIN PAGE CONTENT ---
+st.markdown('<div class="main-title">AgentRAG</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Enterprise Knowledge Assistant & Intelligent Query Router</div>', unsafe_allow_html=True)
+
+# Step 3: Ask Question
+prefilled_val = st.session_state.get("prefill_query", "")
+
+with st.form("query_form"):
+    user_question = st.text_input(
+        "3. Ask Question:",
+        value=prefilled_val,
+        placeholder="e.g., 'What is the leave policy?' or 'What is the average salary?'"
+    )
+    submit_btn = st.form_submit_button("Submit Question", type="primary", use_container_width=False)
+
+if submit_btn and user_question:
+    # Clear prefill state on submit
+    if "prefill_query" in st.session_state:
+        del st.session_state["prefill_query"]
+
+    with st.spinner("Routing through LangGraph and generating response..."):
+        status_code, chat_res = send_chat_query(user_question)
+
+    if status_code == 200:
+        route = chat_res.get("route", "rag").lower()
+        answer = chat_res.get("answer", "")
+        sources = chat_res.get("sources", [])
+        sql_query = chat_res.get("sql_query")
+
+        st.markdown("---")
+        
+        # 5. Display Route
+        col_route, col_meta = st.columns([1, 3])
+        with col_route:
+            if route == "rag":
+                st.markdown('<span class="badge-rag">📄 Route: RAG (Unstructured Document)</span>', unsafe_allow_html=True)
+            else:
+                st.markdown('<span class="badge-sql">🗄️ Route: SQL (MySQL Database)</span>', unsafe_allow_html=True)
+
+        # 4. Display Answer
+        st.subheader("4. Generated Answer")
+        st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
+
+        # SQL Query Inspection
+        if route == "sql" and sql_query:
+            with st.expander("🔍 Inspected SQL Query (Validated SELECT)", expanded=False):
+                st.code(sql_query, language="sql")
+
+        # 6. Display Sources (for RAG)
+        if route == "rag":
+            st.subheader("6. Source Documents")
+            if sources:
+                for idx, src in enumerate(sources, 1):
+                    doc_name = src.get("source", "Document")
+                    page_num = src.get("page", "N/A")
+                    content_excerpt = src.get("content", "")
+
+                    with st.container():
+                        st.markdown(f"""
+                        <div class="source-card">
+                            <strong>Source #{idx}:</strong> <code>{doc_name}</code> (Page: <b>{page_num}</b>)<br/>
+                            <div style="margin-top: 6px; color: #4A5568; font-size: 0.95rem;">
+                                <em>"{content_excerpt}"</em>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+            else:
+                st.info("No document sources cited.")
+
+    else:
+        err_msg = chat_res.get("detail", "Failed to retrieve response from backend.")
+        st.error(f"Error ({status_code}): {err_msg}")
+elif submit_btn and not user_question:
+    st.warning("Please enter a question before submitting.")

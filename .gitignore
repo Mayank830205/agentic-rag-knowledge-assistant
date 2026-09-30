@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Secrets and environment variables
+.env
+
+# ChromaDB persistence directory
+chroma_data/
+
+# Application storage & scratch data
+data/documents/*.pdf
+!data/documents/sample_company_policies.pdf
+
+# Testing & logs
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# IDE & Editor artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.docker/

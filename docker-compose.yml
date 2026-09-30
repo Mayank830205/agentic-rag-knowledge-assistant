@@ -1,0 +1,70 @@
+services:
+  # MySQL Database Service
+  mysql:
+    image: mysql:8.0
+    container_name: agentrag_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-agentrag_db}
+      MYSQL_USER: ${MYSQL_USER:-rag_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-rag_password}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD:-root_password} || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # FastAPI Backend Service
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentrag_backend
+    restart: unless-stopped
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-agentrag_db}
+      - MYSQL_USER=${MYSQL_USER:-rag_user}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-rag_password}
+      - CHROMA_PERSIST_DIRECTORY=/app/chroma_data
+      - DATA_DOCUMENTS_DIRECTORY=/app/data/documents
+    volumes:
+      - chroma_data:/app/chroma_data
+      - ./data/documents:/app/data/documents
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # Streamlit Frontend Service
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentrag_frontend
+    restart: unless-stopped
+    command: streamlit run frontend/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:
+    driver: local
+  chroma_data:
+    driver: local
